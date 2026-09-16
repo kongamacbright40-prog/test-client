@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>WebRTC Signaling Test</title>
+  <style>
+    body { font-family: sans-serif; background: #111; color: #eee; padding: 20px; }
+    video { width: 45%; background: #000; margin: 10px; border-radius: 8px; }
+    input, button { padding: 8px; margin: 4px; }
+  </style>
+</head>
+<body>
+  <h2>Signaling Test Client</h2>
+  <p>Session: <input id="session" value="test-room-1"></p>
+  <p>Client ID (make this unique per device, e.g. "device-a", "device-b"):
+    <input id="clientId" value=""></p>
+  <p>Signaling server URL (use your machine's LAN IP, not localhost, for a second device):
+    <input id="serverUrl" value="ws://192.168.1.100:8000" size="30"></p>
+  <button onclick="start()">Start</button>
+
+  <div>
+    <video id="localVideo" autoplay muted playsinline></video>
+    <video id="remoteVideo" autoplay playsinline></video>
+  </div>
+
+  <script>
+    let ws, pc, localStream, remoteClientId;
+
+    async function start() {
+      const session = document.getElementById('session').value;
+      const clientId = document.getElementById('clientId').value || Math.random().toString(36).slice(2, 8);
+      const serverUrl = document.getElementById('serverUrl').value;
+
+      localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      document.getElementById('localVideo').srcObject = localStream;
+
+      ws = new WebSocket(`${serverUrl}/ws/classroom/${session}/${clientId}`);
+
+      pc = new RTCPeerConnection({
+        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+      });
+      localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+      pc.ontrack = (event) => {
+        document.getElementById('remoteVideo').srcObject = event.streams[0];
+      };
+
+      pc.onicecandidate = (event) => {
+        if (event.candidate && remoteClientId) {
+          ws.send(JSON.stringify({
+            type: 'ice-candidate',
+            target: remoteClientId,
+            candidate: event.candidate
+          }));
+        }
+      };
+
+      ws.onmessage = async (event) => {
+        const data = JSON.parse(event.data);
+
+        if (data.type === 'peer-joined') {
+          remoteClientId = data.from;
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          ws.send(JSON.stringify({ type: 'offer', target: remoteClientId, sdp: offer }));
+        }
+
+        if (data.type === 'offer') {
+          remoteClientId = data.from;
+          await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          ws.send(JSON.stringify({ type: 'answer', target: remoteClientId, sdp: answer }));
+        }
+
+        if (data.type === 'answer') {
+          await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+        }
+
+        if (data.type === 'ice-candidate') {
+          await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+        }
+
+        if (data.type === 'peer-left') {
+          document.getElementById('remoteVideo').srcObject = null;
+        }
+      };
+    }
+  </script>
+</body>
+</html>
